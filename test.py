@@ -177,7 +177,7 @@ class Decoder(nn.Module):
         self.head_size = d_model // self.number_of_heads
 
     
-    def forward(self, x, encoder_output, mask=None):
+    def forward(self, x, encoder_output, mask=None, encoder_padding_mask=None):
         B, T , D = x.shape
         q = self.Wq(x)
         k = self.Wk(x)
@@ -191,7 +191,7 @@ class Decoder(nn.Module):
         x = x + masked_attention_output
         x = self.ln1(x)
 
-        x = x + self.cross_attention(x, encoder_output)
+        x = x + self.cross_attention(x, encoder_output, encoder_padding_mask)
         x = self.ln2(x)
 
         # Here is the feed forward network now.
@@ -254,7 +254,7 @@ class TransformerDecoder(nn.Module):
 
         self.output_layer = nn.Linear(d_model, vocab_size)
 
-    def forward(self, x, encoder_output, mask=None):
+    def forward(self, x, encoder_output, mask=None, encoder_padding_mask=None):
         x = self.embedding(x)
         B, T, D = x.shape
 
@@ -267,7 +267,7 @@ class TransformerDecoder(nn.Module):
         
         x = x + position_embed
         for layer in self.layers:
-            x = layer(x, encoder_output, mask)
+            x = layer(x, encoder_output, mask, encoder_padding_mask)
 
         logits = self.output_layer(x)
 
@@ -378,6 +378,60 @@ tokenized_pairs = [
     for a, s in training_pairs
 ]
 
+val_pairs = [
+    (x["document"][:300], x["summary"][:80])
+    for x in dataset["validation"].select(range(500))
+]
+
+val_tokenized = [
+    (encode(a, merges), ["<START>"] + encode(s, merges) + ["<END>"])
+    for a, s in val_pairs
+]
+
+def validate():
+    encoder.eval()
+    decoder.eval()
+    total_loss = 0
+    with torch.no_grad():
+        idx = torch.randint(0, len(val_tokenized), (batch_size,))
+
+        batch_articles = [val_tokenized[i][0] for i in idx]
+        batch_summaries = [val_tokenized[i][1] for i in idx]
+
+        max_len_article = max(len(a) for a in batch_articles)
+        max_len_summary = max(len(s) for s in batch_summaries)
+        
+        
+
+        # We should add padding <PAD> token at the end and also add <START> and <END> tokens to the summary.
+
+        encoded_articles = [
+            x + ["<PAD>"] * (max_len_article - len(x))
+            for x in batch_articles
+        ]
+
+        encoded_summaries = [
+            x + ["<PAD>"] * (max_len_summary - len(x))
+            for x in batch_summaries
+        ]
+        article = torch.tensor([[token_to_int[t] if t in token_to_int else token_to_int["<PAD>"] for t in seq] for seq in encoded_articles]).to(device)
+        summary = torch.tensor([[token_to_int[t] if t in token_to_int else token_to_int["<PAD>"] for t in seq] for seq in encoded_summaries]).to(device)
+        pad_mask = (article != token_to_int["<PAD>"]).to(device)
+        pad_mask = pad_mask.unsqueeze(1).unsqueeze(2)
+
+        encoder_output = encoder(article, pad_mask)
+        decoder_input = summary[:, :-1]
+        target = summary[:, 1:]
+        logits = decoder(decoder_input, encoder_output, None, pad_mask)
+        loss = loss_function(
+            logits.reshape(-1, logits.shape[-1]),
+            target.reshape(-1)
+        )
+        loss = loss.item()
+        total_loss += loss
+    return total_loss
+
+
 encoder.train()
 decoder.train()
 
@@ -396,12 +450,12 @@ for step in range(4000):
 
     encoded_articles = [
         x + ["<PAD>"] * (max_len_article - len(x))
-        for x in encoded_articles
+        for x in batch_articles
     ]
 
     encoded_summaries = [
         x + ["<PAD>"] * (max_len_summary - len(x))
-        for x in encoded_summaries
+        for x in batch_summaries
     ]
     article = torch.tensor([[token_to_int[t] if t in token_to_int else token_to_int["<PAD>"] for t in seq] for seq in encoded_articles]).to(device)
     summary = torch.tensor([[token_to_int[t] if t in token_to_int else token_to_int["<PAD>"] for t in seq] for seq in encoded_summaries]).to(device)
@@ -411,7 +465,7 @@ for step in range(4000):
     encoder_output = encoder(article, pad_mask)
     decoder_input = summary[:, :-1]
     target = summary[:, 1:]
-    logits = decoder(decoder_input, encoder_output)
+    logits = decoder(decoder_input, encoder_output, None, pad_mask)
     loss = loss_function(
         logits.reshape(-1, logits.shape[-1]),
         target.reshape(-1)
@@ -421,8 +475,11 @@ for step in range(4000):
     loss.backward()
     optimizer.step()
 
-    print(step, loss.item())
-
+    if step % 200 == 0:
+        val_loss = validate()
+        print("VAL:", val_loss)
+        encoder.train()
+        decoder.train()
 # This predicts the next token at once. But we should predict one token at a time.
 # input_ids = torch.tensor([[20, 21, 22, 23]])
 # logits = model(input_ids)
@@ -433,57 +490,50 @@ for step in range(4000):
 ### One token at a time loop
 
 
-encoder.eval()
-decoder.eval()
-
-val_pairs = [
-    (x["document"][:300], x["summary"][:80])
-    for x in dataset["validation"].select(range(500))
-]
-
-val_tokenized = [
-    (encode(a, merges), ["<START>"] + encode(s, merges) + ["<END>"])
-    for a, s in val_pairs
-]
 
 
-
-summary_ids = torch.tensor([[token_to_int[summaries[0][0]]]])
 temperature = 0.8
-
 test_article = training_pairs[0][0]
 
 tokens = encode(test_article, merges)
-article = torch.tensor([[token_to_int[t] for t in tokens]]).to(device)
+article = torch.tensor([[token_to_int.get(t, token_to_int["<PAD>"]) for t in tokens]]).to(device)
 
-with torch.no_grad():   
-    encoder_output = encoder(article)
 
-summary_ids = torch.tensor([[token_to_int["<START>"]]]).to(device)
 
-for _ in range(50):
-    logits = decoder(summary_ids, encoder_output)
 
-    next_token_logits = logits[:, -1, :]
-    probs = torch.softmax(next_token_logits / temperature, dim=-1)
-
-    top_k = 5
-    topk_probs, topk_indices = torch.topk(probs, top_k)
-
-    topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True)
-
-    sampled_index = torch.multinomial(topk_probs, 1)
-    next_token = topk_indices.gather(-1, sampled_index)
+def generate(article):
+    encoder.eval()
+    decoder.eval()
+    summary_ids = torch.tensor([[token_to_int["<START>"]]]).to(device)
     
 
-    summary_ids = torch.cat([summary_ids, next_token], dim=1)
-    if next_token.item() == token_to_int["<END>"]:
-        break
+    with torch.no_grad():
+        pad_mask = (article != token_to_int["<PAD>"]).to(device)
+        pad_mask = pad_mask.unsqueeze(1).unsqueeze(2)
+        # encoder_output = encoder(article, pad_mask).to(device)
+        encoder_output = torch.zeros_like(encoder_output)
+        generated_string = ""
+        for _ in range(50):
+            logits = decoder(summary_ids, encoder_output, None, pad_mask)
 
-generated = "".join([int_to_token[i.item()] for i in summary_ids[0]])
+            next_token_logits = logits[:, -1, :]
+            probs = torch.softmax(next_token_logits / temperature, dim=-1)
+
+            top_k = 5
+            topk_probs, topk_indices = torch.topk(probs, top_k)
+
+            topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True)
+
+            sampled_index = torch.multinomial(topk_probs, 1)
+            next_token = topk_indices.gather(-1, sampled_index)
+            
+            generated_string += int_to_token[next_token.item()]
+            summary_ids = torch.cat([summary_ids, next_token], dim=1)
+            if next_token.item() == token_to_int["<END>"]:
+                break
+    return generated_string
+
+
+generated = generate(article)
 print("ARTICLE:", test_article)
 print("GENERATED:", generated)
-
-
-generated = "".join([int_to_token[i.item()] for i in summary_ids[0]])
-print(generated)
