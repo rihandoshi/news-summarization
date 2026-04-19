@@ -281,7 +281,7 @@ int_to_char = dict()
 
 training_pairs = [
     (x["document"][:300], x["summary"][:80])
-    for x in dataset["train"].select(range(2000))
+    for x in dataset["train"].select(range(10000))
 ]
 
 articles = [pair[0] for pair in training_pairs]
@@ -326,7 +326,7 @@ def merge_pair(corpus, pair):
 
     return corpus
 
-num_merges = 2000
+num_merges = 6000
 merges = []
 
 for _ in range(num_merges):
@@ -348,6 +348,7 @@ vocab = set(vocab)
 vocab.add("<PAD>")
 vocab.add("<START>")
 vocab.add("<END>")
+vocab.add("<MASK>")
 vocab_size = len(vocab)
 
 token_to_int = {tok: i for i, tok in enumerate(vocab)}
@@ -421,6 +422,12 @@ def validate():
 
         encoder_output = encoder(article, pad_mask)
         decoder_input = summary[:, :-1]
+
+            # randomly mask some tokens in the decoder input for teacher forcing
+        mask = torch.rand(decoder_input.shape) < 0.1
+        mask = mask.to(device)
+        decoder_input = decoder_input.masked_fill(mask, token_to_int["<MASK>"])
+
         target = summary[:, 1:]
         logits = decoder(decoder_input, encoder_output, None, pad_mask)
         loss = loss_function(
@@ -435,7 +442,7 @@ def validate():
 encoder.train()
 decoder.train()
 
-for step in range(4000):
+for step in range(8000):
     idx = torch.randint(0, len(training_pairs), (batch_size,))
 
     batch_articles = [tokenized_pairs[i][0] for i in idx]
@@ -464,6 +471,10 @@ for step in range(4000):
 
     encoder_output = encoder(article, pad_mask)
     decoder_input = summary[:, :-1]
+    # randomly mask some tokens in the decoder input for teacher forcing
+    mask = torch.rand(decoder_input.shape) < 0.1
+    mask = mask.to(device)
+    decoder_input = decoder_input.masked_fill(mask, token_to_int["<MASK>"])
     target = summary[:, 1:]
     logits = decoder(decoder_input, encoder_output, None, pad_mask)
     loss = loss_function(
@@ -510,8 +521,7 @@ def generate(article):
     with torch.no_grad():
         pad_mask = (article != token_to_int["<PAD>"]).to(device)
         pad_mask = pad_mask.unsqueeze(1).unsqueeze(2)
-        # encoder_output = encoder(article, pad_mask).to(device)
-        encoder_output = torch.zeros_like(encoder_output)
+        encoder_output = encoder(article, pad_mask).to(device)
         generated_string = ""
         for _ in range(50):
             logits = decoder(summary_ids, encoder_output, None, pad_mask)
