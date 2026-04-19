@@ -423,11 +423,6 @@ def validate():
         encoder_output = encoder(article, pad_mask)
         decoder_input = summary[:, :-1]
 
-            # randomly mask some tokens in the decoder input for teacher forcing
-        mask = torch.rand(decoder_input.shape) < 0.1
-        mask = mask.to(device)
-        decoder_input = decoder_input.masked_fill(mask, token_to_int["<MASK>"])
-
         target = summary[:, 1:]
         logits = decoder(decoder_input, encoder_output, None, pad_mask)
         loss = loss_function(
@@ -474,6 +469,9 @@ for step in range(8000):
     # randomly mask some tokens in the decoder input for teacher forcing
     mask = torch.rand(decoder_input.shape) < 0.1
     mask = mask.to(device)
+    # Should not include <START>, <PAD> and <END> tokens in the masking
+    special_tokens_mask = (decoder_input == token_to_int["<START>"]) | (decoder_input == token_to_int["<PAD>"]) | (decoder_input == token_to_int["<END>"])
+    mask = mask & ~special_tokens_mask
     decoder_input = decoder_input.masked_fill(mask, token_to_int["<MASK>"])
     target = summary[:, 1:]
     logits = decoder(decoder_input, encoder_output, None, pad_mask)
