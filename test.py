@@ -281,7 +281,7 @@ int_to_char = dict()
 
 training_pairs = [
     (x["document"][:300], x["summary"][:80])
-    for x in dataset["train"].select(range(10000))
+    for x in dataset["train"].select(range(6000))
 ]
 
 articles = [pair[0] for pair in training_pairs]
@@ -326,7 +326,7 @@ def merge_pair(corpus, pair):
 
     return corpus
 
-num_merges = 6000
+num_merges = 4000
 merges = []
 
 for _ in range(num_merges):
@@ -437,7 +437,7 @@ def validate():
 encoder.train()
 decoder.train()
 
-for step in range(8000):
+for step in range(6000):
     idx = torch.randint(0, len(training_pairs), (batch_size,))
 
     batch_articles = [tokenized_pairs[i][0] for i in idx]
@@ -467,9 +467,16 @@ for step in range(8000):
     encoder_output = encoder(article, pad_mask)
     decoder_input = summary[:, :-1]
     # randomly mask some tokens in the decoder input for teacher forcing
-    mask = torch.rand(decoder_input.shape) < 0.1
-    mask = mask.to(device)
+    B, T = decoder_input.shape
+    positions = torch.arange(T, device=device).unsqueeze(0).expand(B, T)
+    pos_fraction = positions / T
+    base_prob = 0.1
+    mask_prob = base_prob * (0.3 + 1.5 * pos_fraction)
+    random_vals = torch.rand_like(mask_prob)
+    mask = random_vals < mask_prob
+
     # Should not include <START>, <PAD> and <END> tokens in the masking
+
     special_tokens_mask = (decoder_input == token_to_int["<START>"]) | (decoder_input == token_to_int["<PAD>"]) | (decoder_input == token_to_int["<END>"])
     mask = mask & ~special_tokens_mask
     decoder_input = decoder_input.masked_fill(mask, token_to_int["<MASK>"])
@@ -541,7 +548,14 @@ def generate(article):
                 break
     return generated_string
 
+article_A = training_pairs[0][0]
+article_B = training_pairs[100][0]   # pick something far away
 
-generated = generate(article)
-print("ARTICLE:", test_article)
-print("GENERATED:", generated)
+tokens_A = encode(article_A, merges)
+tokens_B = encode(article_B, merges)
+
+tensor_A = torch.tensor([[token_to_int.get(t, token_to_int["<PAD>"]) for t in tokens_A]]).to(device)
+tensor_B = torch.tensor([[token_to_int.get(t, token_to_int["<PAD>"]) for t in tokens_B]]).to(device)
+
+print("A:", generate(tensor_A))
+print("B:", generate(tensor_B))
