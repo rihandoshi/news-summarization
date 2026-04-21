@@ -191,7 +191,7 @@ class Decoder(nn.Module):
         x = x + masked_attention_output
         x = self.ln1(x)
 
-        x = x + self.cross_attention(x, encoder_output, encoder_padding_mask)
+        x = x + 2 * self.cross_attention(x, encoder_output, encoder_padding_mask)
         x = self.ln2(x)
 
         # Here is the feed forward network now.
@@ -464,7 +464,7 @@ for step in range(18000):
     pad_mask = (article != token_to_int["<PAD>"]).to(device)
     pad_mask = pad_mask.unsqueeze(1).unsqueeze(2)
 
-    encoder_output = encoder(article, pad_mask)
+    encoder_output = encoder(article, pad_mask) 
     decoder_input = summary[:, :-1]
     # randomly mask some tokens in the decoder input for teacher forcing
     B, T = decoder_input.shape
@@ -488,7 +488,20 @@ for step in range(18000):
     special_tokens_mask = (decoder_input == token_to_int["<START>"]) | (decoder_input == token_to_int["<PAD>"]) | (decoder_input == token_to_int["<END>"])
     mask = mask & ~special_tokens_mask
 
-    decoder_input = decoder_input.masked_fill(mask, token_to_int["<MASK>"])
+    rand_vals = torch.rand_like(decoder_input.float())
+
+    mask_mask = (rand_vals < 0.6) & mask
+    mask_rand = (rand_vals >= 0.6) & (rand_vals < 0.8) & mask
+    mask_pad  = (rand_vals >= 0.8) & mask
+
+    decoder_input = decoder_input.masked_fill(mask_mask, token_to_int["<MASK>"])
+
+    random_tokens = torch.randint(0, vocab_size, decoder_input.shape, device=device)
+    decoder_input = torch.where(mask_rand, random_tokens, decoder_input)
+
+    decoder_input = decoder_input.masked_fill(mask_pad, token_to_int["<PAD>"])
+
+        
     target = summary[:, 1:]
     logits = decoder(decoder_input, encoder_output, None, pad_mask)
     loss = loss_function(
@@ -541,9 +554,17 @@ def generate(article):
             logits = decoder(summary_ids, encoder_output, None, pad_mask)
 
             next_token_logits = logits[:, -1, :]
+            article_ids = torch.unique(article[0])  # tokens in article
+
+            bias = torch.zeros_like(next_token_logits)
+            alpha = 0.5  # tune this
+
+            bias[0, article_ids] += alpha
+
+            next_token_logits = next_token_logits + bias
             probs = torch.softmax(next_token_logits / temperature, dim=-1)
 
-            top_k = 5
+            top_k = 20
             topk_probs, topk_indices = torch.topk(probs, top_k)
 
             topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True)
@@ -558,7 +579,7 @@ def generate(article):
     return generated_string
 
 article_A = training_pairs[0][0]
-article_B = training_pairs[100][0]   # pick something far away fdsgsgfgadfsddsgsdfdgsdgfafafsfd
+article_B = training_pairs[100][0]   # pick something far away fdsgsgfgadfsddsgsdfdgsdgfafaaa
 
 tokens_A = encode(article_A, merges)
 tokens_B = encode(article_B, merges)
