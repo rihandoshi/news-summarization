@@ -326,7 +326,7 @@ def merge_pair(corpus, pair):
 
     return corpus
 
-num_merges = 4000
+num_merges = 800
 merges = []
 
 for _ in range(num_merges):
@@ -557,8 +557,14 @@ def generate(article):
             article_ids = torch.unique(article[0])  # tokens in article
 
             bias = torch.zeros_like(next_token_logits)
-            alpha = 0.5  # tune this
+            alpha = 1.0  # tune this
 
+            valid_ids = article_ids[
+                (article_ids != token_to_int["<PAD>"]) &
+                (article_ids != token_to_int["<START>"]) &
+                (article_ids != token_to_int["<END>"]) &
+                (article_ids != token_to_int["<MASK>"])
+            ]
             bias[0, article_ids] += alpha
 
             next_token_logits = next_token_logits + bias
@@ -572,7 +578,7 @@ def generate(article):
             sampled_index = torch.multinomial(topk_probs, 1)
             next_token = topk_indices.gather(-1, sampled_index)
             
-            generated_string += int_to_token[next_token.item()]
+            generated_string += int_to_token[next_token.item()] + " "
             summary_ids = torch.cat([summary_ids, next_token], dim=1)
             if next_token.item() == token_to_int["<END>"]:
                 break
